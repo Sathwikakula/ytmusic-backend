@@ -3,25 +3,29 @@ from flask_cors import CORS
 from ytmusicapi import YTMusic
 import yt_dlp
 import requests
+import os
 
+# Initialize Flask
 app = Flask(__name__)
-CORS(app)
+CORS(app)  # Enable frontend to access API
 
-ytmusic = YTMusic()
+# Initialize YTMusic
+ytmusic = YTMusic()  # Limited access, no login
 
+# -------------------- Search Endpoint --------------------
 @app.route('/search')
 def search():
     query = request.args.get('q')
     if not query:
         return jsonify({"error": "Query parameter 'q' is missing"}), 400
-    
+
     try:
-        search_results = ytmusic.search(query, filter="songs", limit=15)
-        return jsonify(search_results)
+        results = ytmusic.search(query, filter="songs", limit=15)
+        return jsonify(results)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# UPGRADED Endpoint to stream audio and handle seeking (Range Requests)
+# -------------------- Stream Endpoint --------------------
 @app.route('/stream')
 def stream():
     video_id = request.args.get('videoId')
@@ -36,40 +40,33 @@ def stream():
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
             audio_url = info['url']
-        
-        # Get the range header from the client's request
+
         range_header = request.headers.get('Range', None)
-        
-        # Prepare headers for the request to Google's servers
         headers = {'User-Agent': request.user_agent.string}
         if range_header:
             headers['Range'] = range_header
 
-        # Make the request to the real audio URL
         req = requests.get(audio_url, stream=True, headers=headers)
 
-        # Create the response to send back to the client
-        # Use a generator to stream the content chunk by chunk
         def generate():
             for chunk in req.iter_content(chunk_size=4096):
                 yield chunk
 
-        # Build the Flask response with appropriate headers
-        resp = Response(generate(), mimetype=req.headers['content-type'])
-        
-        # If it was a range request, set the status code to 206 Partial Content
+        resp = Response(generate(), mimetype=req.headers.get('content-type'))
         if range_header:
             resp.status_code = 206
-            resp.headers.add('Content-Range', req.headers.get('Content-Range'))
-        
-        resp.headers.add('Content-Length', req.headers.get('Content-Length'))
-        resp.headers.add('Accept-Ranges', 'bytes')
+            if 'Content-Range' in req.headers:
+                resp.headers['Content-Range'] = req.headers['Content-Range']
+        resp.headers['Content-Length'] = req.headers.get('Content-Length', '0')
+        resp.headers['Accept-Ranges'] = 'bytes'
 
         return resp
-        
+
     except Exception as e:
         print(f"Server error: {e}")
         return "Error fetching stream", 500
 
+# -------------------- Main --------------------
 if __name__ == '__main__':
-    app.run(debug=True)
+    port = int(os.environ.get("PORT", 5000))  # Render sets PORT
+    app.run(host="0.0.0.0", port=port, debug=True)
